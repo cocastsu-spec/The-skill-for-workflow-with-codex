@@ -1,0 +1,16 @@
+<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thumbnail Forensics - Render Bridge</title><style>body{max-width:740px;margin:40px auto;font:16px/1.5 system-ui;padding:0 20px}input,button{font:inherit;padding:9px;margin:5px 0}input[type=password]{width:95%}input[type=file]{width:90%}button{cursor:pointer}pre{background:#f5f5f5;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere}.warn{background:#fff1d0;padding:12px}</style></head><body>
+<h1>Thumbnail Forensics — Render Free</h1><p>Chỉ xử lý ZIP, lưu bản ghi và chuyển PNG cho GPT trong ChatGPT Chat. Không chạy AI thị giác bên ngoài.</p>
+<p class="warn"><strong>Cảnh báo:</strong> Ổ đĩa Render Free không lưu dữ liệu bền vững. Sau mỗi đợt, hãy tải checkpoint. Khi Render ngủ/khởi động lại hoặc redeploy, dữ liệu có thể mất.</p>
+<label>THUMBNAIL_TOKEN (Render Environment)<input id="token" type="password" autocomplete="off" placeholder="Token bí mật (không được chia sẻ trong chat)"></label>
+<p><input id="zip" type="file" accept=".zip"><button onclick="upload(false)">Tải ZIP thumbnail</button><button onclick="upload(true)">Khôi phục checkpoint</button></p>
+<p>Study ID: <input id="study" type="text" placeholder="study_xxx"></p>
+<p><button onclick="getStatus()">Kiểm tra tiến độ</button> <button onclick="downloadFile('checkpoint')">Tải checkpoint</button> <button onclick="downloadFile('result')">Tải ZIP kết quả</button></p>
+<pre id="output">Đăng nhập bằng token trên Render, tải ZIP, sau đó đưa Study ID vào ChatGPT để plugin tiếp tục.</pre>
+<script>
+const out=s=>document.getElementById('output').textContent=typeof s==='string'?s:JSON.stringify(s,null,2);
+function headers(){return {Authorization:'Bearer '+document.getElementById('token').value}}
+async function result(r){const data=await r.json().catch(()=>({error:r.statusText}));if(!r.ok)throw new Error(JSON.stringify(data));return data}
+async function upload(restore){const file=document.getElementById('zip').files[0];if(!file){out('Chọn tệp ZIP.');return;}const form=new FormData();form.append('file',file); try {const d=await result(await fetch(restore?'/api/restore':'/api/upload',{method:'POST',headers:headers(),body:form}));document.getElementById('study').value=d.study_id||d.restored_study_id;out(d)}catch(e){out(String(e))}}
+async function getStatus(){try{out(await result(await fetch('/api/status/'+encodeURIComponent(document.getElementById('study').value),{headers:headers()})))}catch(e){out(String(e))}}
+async function downloadFile(kind){try{const id=document.getElementById('study').value;const r=await fetch('/api/'+kind+'/'+encodeURIComponent(id),{headers:headers()});if(!r.ok){out(await r.text());return;}const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=id+'-'+kind+'.zip';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),10000)}catch(e){out(String(e))}}
+</script></body></html>
