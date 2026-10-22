@@ -13,6 +13,11 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 MAX_FILES = 10000
+ALLOWED_IMAGES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
+
+def supported_image_entries(zf):
+    return [e for e in zf.infolist() if not e.is_dir() and Path(e.filename).suffix.lower() in ALLOWED_IMAGES]
+
 MAX_TOTAL_BYTES = 4 * 1024 ** 3
 MAX_SINGLE_BYTES = 30 * 1024 ** 2
 
@@ -28,10 +33,13 @@ def read_json(path: Path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def png_valid(path: Path):
+def image_valid(path: Path, suffix: str):
     with path.open('rb') as f:
-        if f.read(8) != b'\x89PNG\r\n\x1a\n':
-            raise ValueError(f'Not a PNG file: {path}')
+        header = f.read(16)
+    good = (suffix == '.png' and header.startswith(b'\x89PNG\r\n\x1a\n')) or (suffix in ('.jpg','.jpeg') and header.startswith(b'\xff\xd8\xff')) or (suffix == '.webp' and header.startswith(b'RIFF') and header[8:12] == b'WEBP')
+    if not good:
+        raise ValueError(f'Invalid {suffix} image signature: {path.name}')
+
 
 
 def state(root):
@@ -48,12 +56,12 @@ def ingest(args):
     root.mkdir(parents=True, exist_ok=True)
     entries, total, existing = [], 0, set()
     with zipfile.ZipFile(path) as zf:
-        zips = [e for e in zf.infolist() if not e.is_dir() and e.filename.lower().endswith('.png')]
+        zips = supported_image_entries(zf)
         if not zips or len(zips) > MAX_FILES:
-            raise ValueError(f'PNG count invalid: {len(zips)}')
+            raise ValueError(f'Image count invalid: {len(zips)} (supports PNG/JPG/JPEG/WebP)')
         for i, info in enumerate(zips, 1):
             if info.file_size > MAX_SINGLE_BYTES:
-                raise ValueError(f'Individual PNG exceeds safe size: {info.filename}')
+                raise ValueError(f'Individual image exceeds safe size: {info.filename}')
             total += info.file_size
             if total > MAX_TOTAL_BYTES:
                 raise ValueError('Uncompressed ZIP is too large')
@@ -64,7 +72,8 @@ def ingest(args):
             if original_name.startswith('/') or '..' in Path(original_name).parts:
                 raise ValueError(f'Unsafe ZIP path: {original_name}')
             iid = f'IMG-{i:06d}'
-            target = root / 'originals' / f'{iid}.png'
+            suffix = Path(original_name).suffix.lower()
+            target = root / 'originals' / f'{iid}{suffix}'
             target.parent.mkdir(parents=True, exist_ok=True)
             h = hashlib.sha256()
             actual = 0
@@ -78,10 +87,10 @@ def ingest(args):
                         raise ValueError('Decompression size exceeded')
                     h.update(chunk)
                     dst.write(chunk)
-            png_valid(target)
+            image_valid(target, suffix)
             entries.append({'image_id': iid, 'source_path': original_name,
                             'sha256': h.hexdigest(), 'bytes': actual,
-                            'original': str(target.relative_to(root))})
+                            'original': str(target.relative_to(root)), 'mime_type': ALLOWED_IMAGES[suffix]})
     write_json(root / 'manifest.json', {'created_utc': datetime.now(timezone.utc).isoformat(),
                 'count': len(entries), 'images': entries})
     print(json.dumps({'ingested': len(entries), 'workspace': str(root)}, ensure_ascii=False))
@@ -115,7 +124,7 @@ def next_image(args):
         raise ValueError(f'Image bytes changed: {e["image_id"]}')
     print(json.dumps({'status': 'pending', 'stage': args.stage,
                       'image_id': e['image_id'], 'source_path': e['source_path'],
-                      'sha256': e['sha256'], 'png_path': str(path),
+                      'sha256': e['sha256'], 'image_path': str(path), 'mime_type':e.get('mime_type','image/png'),
                       'remaining': len(found)}, ensure_ascii=False))
 
 
@@ -251,7 +260,7 @@ def package(args):
             base = ''.join(x if x.isascii() and (x.isalnum() or x in '-_') else '_' for x in group).strip('_')[:52] or 'group'
             clean = base + '__' + hashlib.sha256(group.encode('utf-8')).hexdigest()[:12]
             for rank, iid in enumerate(ids, 1):
-                zf.write(root/inverse[iid]['original'], f'groups/{clean}/{rank:02d}_{iid}.png')
+                zf.write(root/inverse[iid]['original'], f'groups/{clean}/{rank:02d}_{iid}{Path(inverse[iid]["original"]).suffix}')
     print(json.dumps({'output':str(args.output),'audit':check},ensure_ascii=False))
 
 
