@@ -201,7 +201,21 @@ def audit(root):
         expected = {i for xs in selection.values() for i in xs}
         result['deep_expected'] = len(expected)
         result['deep_missing'] = sorted(expected - b)
-    result['file_gate_pass'] = len(a) == n and result.get('deep_expected', -1) == len(b) and not result.get('deep_missing', []) and (root/'style_dna.json').is_file()
+    # Counts alone are insufficient: verify every receipt matches the expected image.
+    invalid = []
+    for stage, ids_in_stage in [('first', a), ('deep', b)]:
+        for iid in ids_in_stage:
+            e = next((e for e in manifest['images'] if e['image_id'] == iid), None)
+            try:
+                rec = read_json(record_dir(root, stage) / (iid + '.json'))
+                if e is None or not isinstance(rec, dict) or rec.get('image_id') != iid or rec.get('sha256') != e['sha256'] or rec.get('observed_with') != 'chatgpt_visual':
+                    invalid.append(stage + ':' + iid)
+            except (ValueError, OSError, KeyError, TypeError):
+                invalid.append(stage + ':' + iid)
+    result['invalid_records'] = sorted(invalid)
+    result['file_gate_pass'] = (len(a) == n and not invalid and
+        result.get('deep_expected', -1) == len(b) and not result.get('deep_missing', []) and
+        (root/'style_dna.json').is_file())
     return result
 
 
@@ -233,7 +247,9 @@ def package(args):
             for rec in (root/'observations'/kind).glob('*.json'):
                 zf.write(rec, f'reports/{kind}/{rec.name}')
         for group, ids in selection.items():
-            clean = ''.join(x if x.isalnum() or x in '-_' else '_' for x in group).strip('_')[:72] or 'group'
+            # Include a digest: distinct groups must never merge after filename sanitization.
+            base = ''.join(x if x.isascii() and (x.isalnum() or x in '-_') else '_' for x in group).strip('_')[:52] or 'group'
+            clean = base + '__' + hashlib.sha256(group.encode('utf-8')).hexdigest()[:12]
             for rank, iid in enumerate(ids, 1):
                 zf.write(root/inverse[iid]['original'], f'groups/{clean}/{rank:02d}_{iid}.png')
     print(json.dumps({'output':str(args.output),'audit':check},ensure_ascii=False))
