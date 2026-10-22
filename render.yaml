@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: thumbnail-forensics-mcp
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /healthz
+    envVars:
+      - key: THUMBNAIL_TOKEN
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.11.11
