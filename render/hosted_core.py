@@ -98,7 +98,7 @@ class HostedStudyCore:
                 "image_id": missing[0] if missing else None}
 
     def deliver(self, study_id: str, image_id: str, stage: str) -> tuple[dict, bytes]:
-        """Return true original PNG bytes to an MCP ImageContent tool result.
+        """Return the untouched original image bytes to an MCP ImageContent tool result.
         Creates a one-use delivery nonce; it proves transport, not comprehension.
         """
         ws, e = self._image_entry(study_id, image_id, stage)
@@ -107,7 +107,7 @@ class HostedStudyCore:
         nonce = secrets.token_urlsafe(24)
         info = {"study_id": study_id, "image_id": image_id, "stage": stage,
                 "sha256": e["sha256"], "delivery_nonce": nonce,
-                "source_path": e["source_path"]}
+                "source_path": e["source_path"], "mime_type": e.get("mime_type", "image/png")}
         ledger.write_json(ws / "deliveries" / stage / f"{image_id}.json", info)
         return info, (ws / e["original"]).read_bytes()
 
