@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -53,14 +54,14 @@ def next_thumbnail(study_id: str, stage: str = "first") -> dict:
 
 @mcp.tool()
 def inspect_thumbnail(study_id: str, image_id: str, stage: str = "first") -> list[TextContent | ImageContent]:
-    """Deliver the original PNG pixels as MCP ImageContent, not URL or OCR text.
+    """Deliver the untouched original PNG/JPEG/WebP as MCP ImageContent, not URL or OCR text.
     Immediately write visible observations via save_thumbnail_observation.
     """
     with lock:
         receipt, pixels = core.deliver(study_id, image_id, stage)
     return [
         TextContent(type="text", text=json.dumps(receipt, ensure_ascii=False)),
-        ImageContent(type="image", data=base64.b64encode(pixels).decode("ascii"), mimeType="image/png"),
+        ImageContent(type="image", data=base64.b64encode(pixels).decode("ascii"), mimeType=receipt.get("mime_type", "image/png")),
     ]
 
 @mcp.tool()
@@ -132,18 +133,34 @@ def home():
     return HTMLResponse(Path(__file__).with_name("index.html").read_text(encoding="utf-8"))
 
 
-def validate_zip(zp: Path) -> None:
+def zip_info(zp: Path) -> dict:
     try:
         with zipfile.ZipFile(zp) as z:
-            entries = [x for x in z.infolist() if x.filename.lower().endswith(".png") and not x.is_dir()]
-            if not entries or len(entries) > 10_000:
-                raise HTTPException(400, "ZIP must contain 1..10000 PNG files")
-            if sum(e.file_size for e in entries) > MAX_EXPANDED_BYTES:
-                raise HTTPException(413, "PNG uncompressed total exceeds 768MiB on Render Free")
-            if any(e.file_size > ledger.MAX_SINGLE_BYTES for e in entries):
-                raise HTTPException(413, "Individual PNG exceeds 30MiB")
+            files = [e for e in z.infolist() if not e.is_dir()]
+            ext = Counter(Path(e.filename).suffix.lower() or "(no extension)" for e in files)
+            supported = ledger.supported_image_entries(z)
+            return {"total_files": len(files), "supported_images": len(supported),
+                    "by_extension": dict(ext.most_common(15)),
+                    "nested_archives": int(ext.get('.zip', 0)),
+                    "examples": [e.filename for e in files[:8]],
+                    "supported_extensions": sorted(ledger.ALLOWED_IMAGES)}
     except zipfile.BadZipFile as e:
-        raise HTTPException(400, "Invalid ZIP") from e
+        raise HTTPException(400, "Invalid ZIP archive") from e
+
+
+def validate_zip(zp: Path) -> None:
+    info = zip_info(zp)
+    if not (1 <= info['supported_images'] <= 10_000):
+        msg = "ZIP không chứa PNG/JPG/JPEG/WebP ở lớp ngoài."
+        if info['nested_archives']:
+            msg += " Có ZIP lồng trong ZIP; hãy giải nén ZIP bên trong trước."
+        raise HTTPException(400, {"message": msg, "inspection": info})
+    with zipfile.ZipFile(zp) as z:
+        entries = ledger.supported_image_entries(z)
+        if sum(e.file_size for e in entries) > MAX_EXPANDED_BYTES:
+            raise HTTPException(413, "Total uncompressed images exceed 768MiB on Render Free")
+        if any(e.file_size > ledger.MAX_SINGLE_BYTES for e in entries):
+            raise HTTPException(413, "An individual image exceeds 30MiB")
 
 
 async def receive_upload(file: UploadFile) -> Path:
@@ -160,6 +177,15 @@ async def receive_upload(file: UploadFile) -> Path:
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
         raise
+
+@app.post("/api/inspect-zip")
+async def inspect_zip(file: UploadFile = File(...)):
+    """Report exactly what is inside a ZIP, without loading the images into a study."""
+    tmp = await receive_upload(file)
+    try:
+        return zip_info(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 @app.post("/api/upload")
 async def upload_zip(file: UploadFile = File(...)):
